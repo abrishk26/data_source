@@ -1,16 +1,17 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
-    assignments (instructor_id, class_id, course_id) {
-        instructor_id -> Text,
-        class_id -> Text,
-        course_id -> Text,
+    assignments (id) {
+        id -> Uuid,
+        instructor_id -> Nullable<Uuid>,
+        class_id -> Nullable<Uuid>,
+        course_id -> Nullable<Uuid>,
     }
 }
 
 diesel::table! {
     classes (id) {
-        id -> Text,
+        id -> Uuid,
         year -> Int4,
         section -> Int4,
     }
@@ -18,7 +19,7 @@ diesel::table! {
 
 diesel::table! {
     courses (id) {
-        id -> Text,
+        id -> Uuid,
         course_id -> Text,
         name -> Text,
     }
@@ -26,15 +27,15 @@ diesel::table! {
 
 diesel::table! {
     enrollments (id) {
-        id -> Text,
-        student_id -> Nullable<Text>,
-        course_id -> Nullable<Text>,
+        id -> Uuid,
+        student_id -> Nullable<Uuid>,
+        course_id -> Nullable<Uuid>,
     }
 }
 
 diesel::table! {
     instructors (id) {
-        id -> Text,
+        id -> Uuid,
     }
 }
 
@@ -49,14 +50,14 @@ diesel::table! {
 
 diesel::table! {
     students (id) {
-        id -> Text,
-        class_id -> Text,
+        id -> Uuid,
+        class_id -> Uuid,
     }
 }
 
 diesel::table! {
     users (id) {
-        id -> Text,
+        id -> Uuid,
         user_id -> Text,
         first_name -> Text,
         last_name -> Nullable<Text>,
