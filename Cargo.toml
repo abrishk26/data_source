@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-diesel = { version = "2.2.0", features = ["postgres"] }
+diesel = { version = "2.2.0", features = ["postgres", "uuid"] }
+uuid = { version = "1.20.0", features = ["v7"]}
 dotenvy = "0.15"
