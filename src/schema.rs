@@ -3,9 +3,9 @@
 diesel::table! {
     assignments (id) {
         id -> Uuid,
-        instructor_id -> Nullable<Uuid>,
-        class_id -> Nullable<Uuid>,
-        course_id -> Nullable<Uuid>,
+        instructor_id -> Uuid,
+        class_id -> Uuid,
+        course_id -> Uuid,
     }
 }
 
@@ -28,8 +28,8 @@ diesel::table! {
 diesel::table! {
     enrollments (id) {
         id -> Uuid,
-        student_id -> Nullable<Uuid>,
-        course_id -> Nullable<Uuid>,
+        student_id -> Uuid,
+        course_id -> Uuid,
     }
 }
 
@@ -49,20 +49,21 @@ diesel::table! {
 }
 
 diesel::table! {
-    students (id) {
+    profiles (id) {
         id -> Uuid,
-        class_id -> Uuid,
+        first_name -> Text,
+        last_name -> Nullable<Text>,
+        username -> Text,
+        password_hash -> Text,
+        img_url -> Nullable<Text>,
+        role -> Text,
     }
 }
 
 diesel::table! {
-    users (id) {
+    students (id) {
         id -> Uuid,
-        user_id -> Text,
-        first_name -> Text,
-        last_name -> Nullable<Text>,
-        password_hash -> Text,
-        img_url -> Nullable<Text>,
+        class_id -> Uuid,
     }
 }
 
@@ -71,9 +72,9 @@ diesel::joinable!(assignments -> courses (course_id));
 diesel::joinable!(assignments -> instructors (instructor_id));
 diesel::joinable!(enrollments -> courses (course_id));
 diesel::joinable!(enrollments -> students (student_id));
-diesel::joinable!(instructors -> users (id));
+diesel::joinable!(instructors -> profiles (id));
 diesel::joinable!(students -> classes (class_id));
-diesel::joinable!(students -> users (id));
+diesel::joinable!(students -> profiles (id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     assignments,
@@ -82,6 +83,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     enrollments,
     instructors,
     posts,
+    profiles,
     students,
-    users,
 );

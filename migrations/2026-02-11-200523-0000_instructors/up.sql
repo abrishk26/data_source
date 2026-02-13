@@ -2,5 +2,5 @@
 CREATE TABLE instructors (
     id UUID PRIMARY KEY,
 
-    FOREIGN KEY(id) REFERENCES users(id) ON DELETE CASCADE
+    FOREIGN KEY(id) REFERENCES profiles(id) ON DELETE CASCADE
 )

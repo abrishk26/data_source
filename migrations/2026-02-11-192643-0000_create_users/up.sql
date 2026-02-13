@@ -1,10 +1,11 @@
 -- Your SQL goes here
-CREATE TABLE users (
+CREATE TABLE profiles (
     id UUID PRIMARY KEY,
-    user_id TEXT NOT NULL,
     first_name TEXT NOT NULL,
     last_name TEXT,
+    username TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    img_url TEXT
+    img_url TEXT,
+    role TEXT NOT NULL
 )
 
