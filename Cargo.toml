@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-diesel = { version = "2.2.0", features = ["postgres", "uuid"] }
-uuid = { version = "1.20.0", features = ["v7"]}
+diesel = { version = "2.3.0", features = ["uuid"] }
+diesel-async = { version = "0.7.0", features = ["postgres", "bb8"] }
+uuid = { version = "1.20.0", features = ["v7", "serde"]}
 dotenvy = "0.15"
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
+axum = "0.8.8"
+serde = { version = "1.0.228", features = ["derive"] }
