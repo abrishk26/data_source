@@ -98,6 +98,7 @@ async fn get_course_students(
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
     let db_url = std::env::var("DATABASE_URL").unwrap();
 
     // set up connection pool
