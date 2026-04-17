@@ -15,7 +15,7 @@ use diesel_async::{
     AsyncConnection, AsyncPgConnection, RunQueryDsl,
     pooled_connection::{AsyncDieselConnectionManager, bb8},
 };
-use dotenvy::dotenv;
+use dotenvy::dotenv_override;
 use models::{Assignment, Course, Instructor, Profile};
 use serde::{Deserialize, Serialize};
 // use models::{Class, Profile, Student};
@@ -28,9 +28,10 @@ type Pool = bb8::Pool<AsyncPgConnection>;
 // use crate::schema::{classes, profiles, students};
 
 pub async fn establish_connection() -> Result<AsyncPgConnection, Box<dyn std::error::Error>> {
-    dotenv().ok();
+    dotenv_override().ok();
 
     let database_url = env::var("DATABASE_URL").map_err(|_| format!("DATABASE_URL must be set"))?;
+    println!("Database Url: {}", database_url);
     let conn = AsyncPgConnection::establish(&database_url)
         .await
         .map_err(|e| panic!("Error connecting to {}\n{}", database_url, e))?;
@@ -98,12 +99,15 @@ async fn get_course_students(
 
 #[tokio::main]
 async fn main() {
+    dotenv_override().ok();
     let db_url = std::env::var("DATABASE_URL").unwrap();
 
+    println!("Database Url: {}", db_url);
     // set up connection pool
     let config = AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(db_url);
     let pool = bb8::Pool::builder().build(config).await.unwrap();
 
+    println!("Database Connection Established!");
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
         .route("/login", post(login_handler))
