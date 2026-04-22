@@ -67,34 +67,37 @@ struct CourseClassID {
     class_id: String,
 }
 
-async fn get_course_students(
+async fn get_course_students_detailed(
     State(pool): State<Pool>,
     Query(ids): Query<CourseClassID>,
-) -> Result<Json<Vec<String>>, StatusCode> {
+) -> Result<Json<Vec<StudentProfile>>, StatusCode> {
     let mut conn = pool
         .get()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let courses =
-        students::table
-            .inner_join(profiles::table)
-            .filter(students::class_id.eq(
-                Uuid::parse_str(&ids.class_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-            ))
-            .inner_join(enrollments::table)
-            .filter(enrollments::course_id.eq(
-                Uuid::parse_str(&ids.course_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-            ))
-            .select((students::id,))
-            .get_results::<StudentIds>(&mut conn)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .iter()
-            .map(|v| v.id.to_string())
-            .collect();
+    let students = profiles::table
+        .inner_join(students::table)
+        .filter(students::class_id.eq(
+            Uuid::parse_str(&ids.class_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        ))
+        .inner_join(enrollments::table.on(enrollments::student_id.eq(students::id)))
+        .filter(enrollments::course_id.eq(
+            Uuid::parse_str(&ids.course_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+        ))
+        .select((
+            profiles::id,
+            students::nfc_id,
+            profiles::first_name,
+            profiles::last_name,
+            profiles::username,
+            profiles::img_url,
+        ))
+        .get_results::<StudentProfile>(&mut conn)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(Json(courses))
+    Ok(Json(students))
 }
 
 #[tokio::main]
@@ -114,7 +117,7 @@ async fn main() {
         .route("/user/{user_id}", get(get_user_profile))
         .route("/student/courses/{student_id}", get(get_student_courses))
         .route("/course/{course_id}", get(get_course))
-        .route("/student", get(get_course_students))
+        .route("/student", get(get_course_students_detailed))
         .route("/student/profile", get(get_student_profile))
         .route("/class/{class_id}", get(get_class))
         .route(
