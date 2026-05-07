@@ -44,7 +44,7 @@ pub struct Enrollment {
     pub course_id: Uuid,
 }
 
-#[derive(Identifiable, HasQuery, Associations, Insertable, Serialize, Debug)]
+#[derive(Identifiable, Queryable, Selectable, Associations, Insertable, Serialize, Debug)]
 #[diesel(table_name = crate::schema::assignments)]
 #[diesel(belongs_to(Instructor))]
 #[diesel(check_for_backend(diesel::pg::Pg))]
@@ -53,6 +53,10 @@ pub struct Assignment {
     pub instructor_id: Uuid,
     pub class_id: Uuid,
     pub course_id: Uuid,
+    pub day: Option<String>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub room: Option<String>,
 }
 
 #[derive(Identifiable, HasQuery, Insertable, Serialize, Debug)]
