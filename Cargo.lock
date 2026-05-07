@@ -191,6 +191,7 @@ dependencies = [
  "diesel-async",
  "dotenvy",
  "serde",
+ "serde_json",
  "tokio",
  "uuid",
 ]

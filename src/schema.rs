@@ -6,6 +6,10 @@ diesel::table! {
         instructor_id -> Uuid,
         class_id -> Uuid,
         course_id -> Uuid,
+        day -> Nullable<Text>,
+        start_time -> Nullable<Text>,
+        end_time -> Nullable<Text>,
+        room -> Nullable<Text>,
     }
 }
 
