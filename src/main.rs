@@ -522,8 +522,12 @@ async fn main() {
         .route("/schedule/{user_id}", get(get_schedule))
         .with_state(pool);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Listening on port 3000");
+    let server_port = std::env::var("SERVER_PORT")
+        .unwrap_or_else(|_| "0".to_string());
+    let bind_addr = format!("0.0.0.0:{}", server_port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    println!("Listening on {}", addr);
     axum::serve(listener, app).await.unwrap();
 }
 
