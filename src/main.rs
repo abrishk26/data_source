@@ -20,6 +20,7 @@ use models::{Assignment, Course, Instructor, Profile};
 use serde::{Deserialize, Serialize};
 use crate::schema::{assignments, classes, courses, enrollments, instructors, profiles, students};
 use std::env;
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 type Pool = bb8::Pool<AsyncPgConnection>;
@@ -27,7 +28,7 @@ type Pool = bb8::Pool<AsyncPgConnection>;
 pub async fn establish_connection() -> Result<AsyncPgConnection, Box<dyn std::error::Error>> {
     dotenv_override().ok();
     let database_url = env::var("DATABASE_URL").map_err(|_| format!("DATABASE_URL must be set"))?;
-    println!("Database Url: {}", database_url);
+    info!(url = %database_url, "Connecting to database");
     let conn = AsyncPgConnection::establish(&database_url)
         .await
         .map_err(|e| panic!("Error connecting to {}\n{}", database_url, e))?;
@@ -110,17 +111,30 @@ async fn get_course_students_detailed(
     State(pool): State<Pool>,
     Query(ids): Query<CourseClassID>,
 ) -> Result<Json<Vec<StudentProfile>>, StatusCode> {
-    let mut conn = pool.get().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    info!(course_id = %ids.course_id, class_id = %ids.class_id, "GET /student — fetching detailed student list");
+
+    let mut conn = pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to acquire DB connection");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let class_uuid = Uuid::parse_str(&ids.class_id).map_err(|e| {
+        warn!(class_id = %ids.class_id, error = %e, "Invalid class_id UUID");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let course_uuid = Uuid::parse_str(&ids.course_id).map_err(|e| {
+        warn!(course_id = %ids.course_id, error = %e, "Invalid course_id UUID");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    debug!(class_id = %class_uuid, course_id = %course_uuid, "Querying students for class/course");
 
     let students = profiles::table
         .inner_join(students::table)
-        .filter(students::class_id.eq(
-            Uuid::parse_str(&ids.class_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-        ))
+        .filter(students::class_id.eq(class_uuid))
         .inner_join(enrollments::table.on(enrollments::student_id.eq(students::id)))
-        .filter(enrollments::course_id.eq(
-            Uuid::parse_str(&ids.course_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-        ))
+        .filter(enrollments::course_id.eq(course_uuid))
         .select((
             profiles::id,
             students::nfc_id,
@@ -132,8 +146,12 @@ async fn get_course_students_detailed(
         ))
         .get_results::<StudentProfile>(&mut conn)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            error!(error = %e, "DB query failed for get_course_students_detailed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
+    info!(count = students.len(), "Returning student profiles");
     Ok(Json(students))
 }
 
@@ -143,30 +161,49 @@ async fn get_instructor_assignment_enriched(
     State(pool): State<Pool>,
     Path(instructor_id): Path<String>,
 ) -> Result<(StatusCode, Json<Vec<EnrichedAssignment>>), (StatusCode, Json<ErrorResponse>)> {
-    let mut conn = pool.get().await.map_err(internal_error)?;
+    info!(instructor_id = %instructor_id, "GET /instructor/assignment/enriched — fetching enriched assignments");
 
-    let instructor_uuid = Uuid::parse_str(&instructor_id).map_err(internal_error)?;
+    let mut conn = pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to acquire DB connection");
+        internal_error(e)
+    })?;
 
+    let instructor_uuid = Uuid::parse_str(&instructor_id).map_err(|e| {
+        warn!(instructor_id = %instructor_id, error = %e, "Invalid instructor_id UUID");
+        internal_error(e)
+    })?;
+
+    debug!(instructor_id = %instructor_uuid, "Looking up instructor profile");
     let profile = Profile::query()
         .filter(profiles::id.eq(instructor_uuid))
         .get_result(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            warn!(instructor_id = %instructor_uuid, error = %e, "Profile not found for instructor");
+            bad_request_error(e)
+        })?;
 
+    debug!(profile_id = %profile.id, "Looking up instructor record");
     let instructor = Instructor::query()
         .filter(instructors::id.eq(profile.id))
         .get_result(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            warn!(profile_id = %profile.id, error = %e, "Instructor record not found");
+            bad_request_error(e)
+        })?;
 
-    // Load all assignments for instructor with course and class
+    debug!(instructor_id = %instructor_uuid, "Loading assignments with course and class joins");
     let raw: Vec<(Assignment, Course, Class)> = Assignment::belonging_to(&instructor)
         .inner_join(courses::table)
         .inner_join(classes::table)
         .select((Assignment::as_select(), Course::as_select(), Class::as_select()))
         .load(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            error!(instructor_id = %instructor_uuid, error = %e, "DB query failed loading enriched assignments");
+            bad_request_error(e)
+        })?;
 
     let enriched: Vec<EnrichedAssignment> = raw
         .into_iter()
@@ -186,6 +223,7 @@ async fn get_instructor_assignment_enriched(
         })
         .collect();
 
+    info!(instructor_id = %instructor_uuid, count = enriched.len(), "Returning enriched assignments");
     Ok((StatusCode::OK, Json(enriched)))
 }
 
@@ -194,23 +232,41 @@ async fn get_schedule(
     State(pool): State<Pool>,
     Path(user_id): Path<String>,
 ) -> Result<(StatusCode, Json<Vec<ScheduleItem>>), (StatusCode, Json<ErrorResponse>)> {
-    let mut conn = pool.get().await.map_err(internal_error)?;
-    let user_uuid = Uuid::parse_str(&user_id).map_err(internal_error)?;
+    info!(user_id = %user_id, "GET /schedule — fetching schedule");
 
-    // Determine role from profiles
+    let mut conn = pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to acquire DB connection");
+        internal_error(e)
+    })?;
+
+    let user_uuid = Uuid::parse_str(&user_id).map_err(|e| {
+        warn!(user_id = %user_id, error = %e, "Invalid user_id UUID");
+        internal_error(e)
+    })?;
+
+    debug!(user_id = %user_uuid, "Looking up user profile to determine role");
     let profile = Profile::query()
         .filter(profiles::id.eq(user_uuid))
         .get_result(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            warn!(user_id = %user_uuid, error = %e, "Profile not found");
+            bad_request_error(e)
+        })?;
+
+    info!(user_id = %user_uuid, role = %profile.role, "Resolved user role for schedule");
 
     let items: Vec<ScheduleItem> = if profile.role.to_lowercase() == "instructor" {
-        // Instructor: load their assigned courses
+        debug!(user_id = %user_uuid, "Loading instructor schedule");
+
         let instructor = Instructor::query()
             .filter(instructors::id.eq(user_uuid))
             .get_result(&mut conn)
             .await
-            .map_err(bad_request_error)?;
+            .map_err(|e| {
+                warn!(user_id = %user_uuid, error = %e, "Instructor record not found");
+                bad_request_error(e)
+            })?;
 
         let raw: Vec<(Assignment, Course, Class)> = Assignment::belonging_to(&instructor)
             .inner_join(courses::table)
@@ -218,7 +274,10 @@ async fn get_schedule(
             .select((Assignment::as_select(), Course::as_select(), Class::as_select()))
             .load(&mut conn)
             .await
-            .map_err(bad_request_error)?;
+            .map_err(|e| {
+                error!(user_id = %user_uuid, error = %e, "DB query failed loading instructor schedule");
+                bad_request_error(e)
+            })?;
 
         raw.into_iter()
             .map(|(a, c, cl)| ScheduleItem {
@@ -234,24 +293,33 @@ async fn get_schedule(
             })
             .collect()
     } else {
-        // Student: load enrolled courses + their assignments
+        debug!(user_id = %user_uuid, "Loading student schedule");
+
         let student = students::table
             .filter(students::id.eq(user_uuid))
             .get_result::<Student>(&mut conn)
             .await
-            .map_err(bad_request_error)?;
+            .map_err(|e| {
+                warn!(user_id = %user_uuid, error = %e, "Student record not found");
+                bad_request_error(e)
+            })?;
 
         let enrolled_course_ids: Vec<Uuid> = Enrollment::belonging_to(&student)
             .select(enrollments::course_id)
             .load::<Uuid>(&mut conn)
             .await
-            .map_err(bad_request_error)?;
+            .map_err(|e| {
+                error!(user_id = %user_uuid, error = %e, "DB query failed loading enrollments");
+                bad_request_error(e)
+            })?;
 
         if enrolled_course_ids.is_empty() {
+            warn!(user_id = %user_uuid, "Student has no enrollments — returning empty schedule");
             return Ok((StatusCode::OK, Json(Vec::new())));
         }
 
-        // Find assignments for those courses in the student's class
+        debug!(user_id = %user_uuid, course_count = enrolled_course_ids.len(), "Loading assignments for enrolled courses");
+
         let raw: Vec<(Assignment, Course, Class)> = assignments::table
             .filter(assignments::course_id.eq_any(&enrolled_course_ids))
             .filter(assignments::class_id.eq(student.class_id))
@@ -260,7 +328,10 @@ async fn get_schedule(
             .select((Assignment::as_select(), Course::as_select(), Class::as_select()))
             .load(&mut conn)
             .await
-            .map_err(bad_request_error)?;
+            .map_err(|e| {
+                error!(user_id = %user_uuid, error = %e, "DB query failed loading student schedule");
+                bad_request_error(e)
+            })?;
 
         raw.into_iter()
             .map(|(a, c, cl)| ScheduleItem {
@@ -277,6 +348,7 @@ async fn get_schedule(
             .collect()
     };
 
+    info!(user_id = %user_uuid, count = items.len(), "Returning schedule items");
     Ok((StatusCode::OK, Json(items)))
 }
 
@@ -284,13 +356,29 @@ async fn get_class(
     State(pool): State<Pool>,
     Path(class_id): Path<String>,
 ) -> Result<(StatusCode, Json<Class>), (StatusCode, Json<ErrorResponse>)> {
-    let mut conn = pool.get().await.map_err(internal_error)?;
+    info!(class_id = %class_id, "GET /class — fetching class");
+
+    let mut conn = pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to acquire DB connection");
+        internal_error(e)
+    })?;
+
+    let class_uuid = Uuid::parse_str(&class_id).map_err(|e| {
+        warn!(class_id = %class_id, error = %e, "Invalid class_id UUID");
+        internal_error(e)
+    })?;
+
+    debug!(class_id = %class_uuid, "Querying class record");
     let class = Class::query()
-        .filter(classes::id.eq(Uuid::parse_str(&class_id).map_err(internal_error)?))
+        .filter(classes::id.eq(class_uuid))
         .get_result(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            warn!(class_id = %class_uuid, error = %e, "Class not found");
+            bad_request_error(e)
+        })?;
 
+    info!(class_id = %class_uuid, "Returning class");
     Ok((StatusCode::OK, Json(class)))
 }
 
@@ -298,13 +386,29 @@ async fn get_course(
     State(pool): State<Pool>,
     Path(course_id): Path<String>,
 ) -> Result<(StatusCode, Json<Course>), (StatusCode, Json<ErrorResponse>)> {
-    let mut conn = pool.get().await.map_err(internal_error)?;
+    info!(course_id = %course_id, "GET /course — fetching course");
+
+    let mut conn = pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to acquire DB connection");
+        internal_error(e)
+    })?;
+
+    let course_uuid = Uuid::parse_str(&course_id).map_err(|e| {
+        warn!(course_id = %course_id, error = %e, "Invalid course_id UUID");
+        internal_error(e)
+    })?;
+
+    debug!(course_id = %course_uuid, "Querying course record");
     let course = Course::query()
-        .filter(courses::id.eq(Uuid::parse_str(&course_id).map_err(internal_error)?))
+        .filter(courses::id.eq(course_uuid))
         .get_result(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            warn!(course_id = %course_uuid, error = %e, "Course not found");
+            bad_request_error(e)
+        })?;
 
+    info!(course_id = %course_uuid, "Returning course");
     Ok((StatusCode::OK, Json(course)))
 }
 
@@ -312,25 +416,49 @@ async fn get_instructor_assignment(
     State(pool): State<Pool>,
     Path(instructor_id): Path<String>,
 ) -> Result<(StatusCode, Json<Vec<Assignment>>), (StatusCode, Json<ErrorResponse>)> {
-    let mut conn = pool.get().await.map_err(internal_error)?;
+    info!(instructor_id = %instructor_id, "GET /instructor/assignment — fetching assignments");
+
+    let mut conn = pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to acquire DB connection");
+        internal_error(e)
+    })?;
+
+    let instructor_uuid = Uuid::parse_str(&instructor_id).map_err(|e| {
+        warn!(instructor_id = %instructor_id, error = %e, "Invalid instructor_id UUID");
+        internal_error(e)
+    })?;
+
+    debug!(instructor_id = %instructor_uuid, "Looking up instructor profile");
     let profile = Profile::query()
-        .filter(profiles::id.eq(Uuid::parse_str(&instructor_id).map_err(internal_error)?))
+        .filter(profiles::id.eq(instructor_uuid))
         .get_result(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            warn!(instructor_id = %instructor_uuid, error = %e, "Profile not found for instructor");
+            bad_request_error(e)
+        })?;
 
+    debug!(profile_id = %profile.id, "Looking up instructor record");
     let instructor = Instructor::query()
         .filter(instructors::id.eq(profile.id))
         .get_result(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            warn!(profile_id = %profile.id, error = %e, "Instructor record not found");
+            bad_request_error(e)
+        })?;
 
+    debug!(instructor_id = %instructor_uuid, "Loading assignment list");
     let assignment_list = Assignment::belonging_to(&instructor)
         .select(Assignment::as_select())
         .load(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            error!(instructor_id = %instructor_uuid, error = %e, "DB query failed loading assignments");
+            bad_request_error(e)
+        })?;
 
+    info!(instructor_id = %instructor_uuid, count = assignment_list.len(), "Returning assignments");
     Ok((StatusCode::OK, Json(assignment_list)))
 }
 
@@ -338,26 +466,50 @@ async fn get_student_courses(
     State(pool): State<Pool>,
     Path(student_id): Path<String>,
 ) -> Result<(StatusCode, Json<Vec<Course>>), (StatusCode, Json<ErrorResponse>)> {
-    let mut conn = pool.get().await.map_err(internal_error)?;
+    info!(student_id = %student_id, "GET /student/courses — fetching student courses");
+
+    let mut conn = pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to acquire DB connection");
+        internal_error(e)
+    })?;
+
+    let student_uuid = Uuid::parse_str(&student_id).map_err(|e| {
+        warn!(student_id = %student_id, error = %e, "Invalid student_id UUID");
+        internal_error(e)
+    })?;
+
+    debug!(student_id = %student_uuid, "Looking up student profile");
     let profile = Profile::query()
-        .filter(profiles::id.eq(Uuid::parse_str(&student_id).map_err(internal_error)?))
+        .filter(profiles::id.eq(student_uuid))
         .get_result(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            warn!(student_id = %student_uuid, error = %e, "Profile not found for student");
+            bad_request_error(e)
+        })?;
 
+    debug!(profile_id = %profile.id, "Looking up student record");
     let student = Student::query()
         .filter(students::id.eq(profile.id))
         .get_result(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            warn!(profile_id = %profile.id, error = %e, "Student record not found");
+            bad_request_error(e)
+        })?;
 
+    debug!(student_id = %student_uuid, "Loading enrolled courses");
     let course_list = Enrollment::belonging_to(&student)
         .inner_join(courses::table)
         .select(Course::as_select())
         .load(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            error!(student_id = %student_uuid, error = %e, "DB query failed loading student courses");
+            bad_request_error(e)
+        })?;
 
+    info!(student_id = %student_uuid, count = course_list.len(), "Returning student courses");
     Ok((StatusCode::OK, Json(course_list)))
 }
 
@@ -371,8 +523,10 @@ async fn get_student_profile(
     State(pool): State<Pool>,
     Query(ids): Query<Ids>,
 ) -> Result<Json<StudentProfile>, (StatusCode, Json<ErrorResponse>)> {
-    println!("{:?}", ids);
+    debug!(query = ?ids, "GET /student/profile — received query params");
+
     if ids.id.is_none() && ids.nfc_id.is_none() {
+        warn!("GET /student/profile called with no id or nfc_id");
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -381,9 +535,13 @@ async fn get_student_profile(
         ));
     }
 
-    let mut conn = pool.get().await.map_err(internal_error)?;
-    let student = if ids.id.is_some() {
-        let student_id = ids.id.unwrap();
+    let mut conn = pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to acquire DB connection");
+        internal_error(e)
+    })?;
+
+    let student = if let Some(student_id) = ids.id {
+        info!(student_id = %student_id, "Looking up student profile by id");
         students::table
             .inner_join(profiles::table)
             .filter(students::id.eq(student_id))
@@ -398,7 +556,8 @@ async fn get_student_profile(
             ))
             .get_result::<StudentProfile>(&mut conn)
             .await
-            .map_err(|_| {
+            .map_err(|e| {
+                warn!(student_id = %student_id, error = %e, "Student not found by id");
                 (
                     StatusCode::NOT_FOUND,
                     Json(ErrorResponse {
@@ -408,9 +567,10 @@ async fn get_student_profile(
             })?
     } else {
         let nfc_id = ids.nfc_id.unwrap();
+        info!(nfc_id = %nfc_id, "Looking up student profile by nfc_id");
         students::table
             .inner_join(profiles::table)
-            .filter(students::nfc_id.eq(nfc_id))
+            .filter(students::nfc_id.eq(&nfc_id))
             .select((
                 profiles::id,
                 students::nfc_id,
@@ -422,7 +582,8 @@ async fn get_student_profile(
             ))
             .get_result::<StudentProfile>(&mut conn)
             .await
-            .map_err(|_| {
+            .map_err(|e| {
+                warn!(nfc_id = %nfc_id, error = %e, "Student not found by nfc_id");
                 (
                     StatusCode::NOT_FOUND,
                     Json(ErrorResponse {
@@ -432,6 +593,7 @@ async fn get_student_profile(
             })?
     };
 
+    info!(student_id = %student.id, "Returning student profile");
     Ok(Json(student))
 }
 
@@ -449,13 +611,29 @@ async fn get_user_profile(
     State(pool): State<Pool>,
     Path(user_id): Path<String>,
 ) -> Result<(StatusCode, Json<UserProfile>), (StatusCode, Json<ErrorResponse>)> {
-    let mut conn = pool.get().await.map_err(internal_error)?;
+    info!(user_id = %user_id, "GET /user — fetching user profile");
+
+    let mut conn = pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to acquire DB connection");
+        internal_error(e)
+    })?;
+
+    let user_uuid = Uuid::parse_str(&user_id).map_err(|e| {
+        warn!(user_id = %user_id, error = %e, "Invalid user_id UUID");
+        internal_error(e)
+    })?;
+
+    debug!(user_id = %user_uuid, "Querying user profile");
     let profile = Profile::query()
-        .filter(profiles::id.eq(Uuid::parse_str(&user_id).map_err(internal_error)?))
+        .filter(profiles::id.eq(user_uuid))
         .get_result(&mut conn)
         .await
-        .map_err(bad_request_error)?;
+        .map_err(|e| {
+            warn!(user_id = %user_uuid, error = %e, "User profile not found");
+            bad_request_error(e)
+        })?;
 
+    info!(user_id = %user_uuid, role = %profile.role, "Returning user profile");
     Ok((
         StatusCode::OK,
         Json(UserProfile {
@@ -473,21 +651,29 @@ async fn login_handler(
     State(pool): State<Pool>,
     Json(payload): Json<LoginData>,
 ) -> Result<Json<LoginResponse>, StatusCode> {
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    info!(username = %payload.username, "POST /login — login attempt");
 
+    let mut conn = pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to acquire DB connection");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    debug!(username = %payload.username, "Looking up profile by username");
     let profile = Profile::query()
-        .filter(profiles::username.eq(payload.username))
+        .filter(profiles::username.eq(&payload.username))
         .get_result(&mut conn)
         .await
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+        .map_err(|e| {
+            warn!(username = %payload.username, error = %e, "Login failed — user not found");
+            StatusCode::BAD_REQUEST
+        })?;
 
     if profile.password_hash != payload.password {
+        warn!(username = %payload.username, "Login failed — incorrect password");
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    info!(user_id = %profile.id, role = %profile.role, "Login successful");
     Ok(Json(LoginResponse {
         user_id: profile.id.to_string(),
         role: profile.role,
@@ -496,14 +682,22 @@ async fn login_handler(
 
 #[tokio::main]
 async fn main() {
+    // Initialise tracing — respects RUST_LOG env var, defaults to "info"
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     dotenv_override().ok();
     let db_url = std::env::var("DATABASE_URL").unwrap();
 
-    println!("Database Url: {}", db_url);
+    info!(url = %db_url, "Connecting to database");
     let config = AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(db_url);
     let pool = bb8::Pool::builder().build(config).await.unwrap();
 
-    println!("Database Connection Established!");
+    info!("Database connection pool established");
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
         .route("/login", post(login_handler))
@@ -531,7 +725,7 @@ async fn main() {
     let bind_addr = format!("0.0.0.0:{}", server_port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
     let addr = listener.local_addr().unwrap();
-    println!("Listening on {}", addr);
+    info!(address = %addr, "Server listening");
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -539,6 +733,7 @@ fn internal_error<E>(err: E) -> (StatusCode, Json<ErrorResponse>)
 where
     E: std::error::Error,
 {
+    error!(error = %err, "Internal server error");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponse {
@@ -551,6 +746,7 @@ fn bad_request_error<E>(err: E) -> (StatusCode, Json<ErrorResponse>)
 where
     E: std::error::Error,
 {
+    warn!(error = %err, "Bad request error");
     (
         StatusCode::BAD_REQUEST,
         Json(ErrorResponse {
