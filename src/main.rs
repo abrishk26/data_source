@@ -20,7 +20,8 @@ use models::{Assignment, Course, Instructor, Profile};
 use serde::{Deserialize, Serialize};
 use crate::schema::{assignments, classes, courses, enrollments, instructors, profiles, students};
 use std::env;
-use tracing::{debug, error, info, warn};
+use tower_http::trace::{TraceLayer, DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse};
+use tracing::{debug, error, info, warn, Level};
 use uuid::Uuid;
 
 type Pool = bb8::Pool<AsyncPgConnection>;
@@ -718,6 +719,12 @@ async fn main() {
         )
         // B-04: schedule/timetable
         .route("/schedule/{user_id}", get(get_schedule))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_request(DefaultOnRequest::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
         .with_state(pool);
 
     let server_port = std::env::var("SERVER_PORT")
