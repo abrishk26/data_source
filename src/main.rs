@@ -1,3 +1,4 @@
+mod db;
 mod models;
 mod schema;
 
@@ -11,11 +12,8 @@ use axum::{
 };
 use diesel::prelude::*;
 use diesel::{BelongingToDsl, ExpressionMethods, HasQuery, QueryDsl};
-use diesel_async::{
-    AsyncConnection, AsyncPgConnection, RunQueryDsl,
-    pooled_connection::{AsyncDieselConnectionManager, bb8},
-};
-use dotenvy::dotenv_override;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use db::DbPool;
 use models::{Assignment, Course, Instructor, Profile};
 use serde::{Deserialize, Serialize};
 use crate::schema::{assignments, classes, courses, enrollments, instructors, profiles, students};
@@ -24,10 +22,10 @@ use tower_http::trace::{TraceLayer, DefaultMakeSpan, DefaultOnRequest, DefaultOn
 use tracing::{debug, error, info, warn, Level};
 use uuid::Uuid;
 
-type Pool = bb8::Pool<AsyncPgConnection>;
+type Pool = DbPool;
 
 pub async fn establish_connection() -> Result<AsyncPgConnection, Box<dyn std::error::Error>> {
-    dotenv_override().ok();
+    dotenvy::dotenv().ok();
     let database_url = env::var("DATABASE_URL").map_err(|_| format!("DATABASE_URL must be set"))?;
     info!(url = %database_url, "Connecting to database");
     let conn = AsyncPgConnection::establish(&database_url)
@@ -691,14 +689,14 @@ async fn main() {
         )
         .init();
 
-    dotenv_override().ok();
-    let db_url = std::env::var("DATABASE_URL").unwrap();
+    // Load .env for local dev; do not override env vars set by the host (Render, etc.).
+    dotenvy::dotenv().ok();
+    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-    info!(url = %db_url, "Connecting to database");
-    let config = AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(db_url);
-    let pool = bb8::Pool::builder().build(config).await.unwrap();
-
-    info!("Database connection pool established");
+    info!("Connecting to database");
+    let pool = db::create_pool(db_url)
+        .await
+        .expect("Failed to create database pool — check DATABASE_URL and network access");
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
         .route("/login", post(login_handler))
