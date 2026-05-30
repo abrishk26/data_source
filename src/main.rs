@@ -72,6 +72,7 @@ struct StudentProfile {
     last_name: Option<String>,
     username: String,
     img_url: Option<String>,
+    role: String,
 }
 
 #[derive(Serialize)]
@@ -127,6 +128,7 @@ async fn get_course_students_detailed(
             profiles::last_name,
             profiles::username,
             profiles::img_url,
+            profiles::role,
         ))
         .get_results::<StudentProfile>(&mut conn)
         .await
@@ -392,6 +394,7 @@ async fn get_student_profile(
                 profiles::last_name,
                 profiles::username,
                 profiles::img_url,
+                profiles::role,
             ))
             .get_result::<StudentProfile>(&mut conn)
             .await
@@ -415,6 +418,7 @@ async fn get_student_profile(
                 profiles::last_name,
                 profiles::username,
                 profiles::img_url,
+                profiles::role,
             ))
             .get_result::<StudentProfile>(&mut conn)
             .await
